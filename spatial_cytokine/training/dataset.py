@@ -179,8 +179,8 @@ class FolderDataset3D(Dataset3D):
             data = np.load(f)
             data = data.astype(np.float64)
         if data.ndim == 3:
-            image = image[:, :, :, np.newaxis] # DHW => DHWC
-        image = image.transpose(3, 0, 1, 2) # DHWC => CDHW
-        return image
+            data = data[:, :, :, np.newaxis] # DHW => DHWC
+        data = data.transpose(3, 0, 1, 2) # DHWC => CDHW
+        return data
 
 #----------------------------------------------------------------------------
