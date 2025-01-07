@@ -1,0 +1,56 @@
+{
+  "dataset_kwargs": {
+    "class_name": "training.dataset.FolderDataset3D",
+    "path": "spatial_cytokine/data/combined_files",
+    "resolution": 128,
+    "max_size": 50000
+  },
+  "data_loader_kwargs": {
+    "pin_memory": true,
+    "num_workers": 1,
+    "prefetch_factor": 2
+  },
+  "network_kwargs": {
+    "model_type": "SongUNet",
+    "embedding_type": "positional",
+    "encoder_type": "standard",
+    "decoder_type": "standard",
+    "channel_mult_noise": 1,
+    "resample_filter": [
+      1,
+      1
+    ],
+    "model_channels": 128,
+    "channel_mult": [
+      2,
+      2,
+      2
+    ],
+    "class_name": "training.networks.EDMPrecond",
+    "dropout": 0.13,
+    "use_fp16": false
+  },
+  "loss_kwargs": {
+    "class_name": "training.loss.EDMLoss"
+  },
+  "optimizer_kwargs": {
+    "class_name": "torch.optim.Adam",
+    "lr": 0.001,
+    "betas": [
+      0.9,
+      0.999
+    ],
+    "eps": 1e-08
+  },
+  "total_kimg": 20000,
+  "ema_halflife_kimg": 50,
+  "batch_size": 60,
+  "batch_gpu": 20,
+  "loss_scaling": 1.0,
+  "cudnn_benchmark": true,
+  "kimg_per_tick": 10,
+  "snapshot_ticks": 50,
+  "state_dump_ticks": 100,
+  "seed": 1330617084,
+  "run_dir": "spatial_cytokine/data/outdir/00000-combined_files-uncond-ddpmpp-edm-gpus3-batch60-fp32"
+}

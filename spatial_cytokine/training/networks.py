@@ -80,9 +80,9 @@ class Conv3d(torch.nn.Module):
 
         if self.fused_resample and self.up and w is not None:
             x = torch.nn.functional.conv_transpose3d(x, f.mul(8).tile([self.in_channels, 1, 1, 1, 1]), groups=self.in_channels, stride=2, padding=max(f_pad - w_pad, 0))
-            x = torch.nn.functional.conv3d(x, w, padding=max(w_pad - f_pad, 0))
+            x = torch.nn.functional.conv3d(x, w, padding=max(w_pad - f_pad, 0),stride=2)
         elif self.fused_resample and self.down and w is not None:
-            x = torch.nn.functional.conv3d(x, w, padding=w_pad+f_pad)
+            x = torch.nn.functional.conv3d(x, w, padding=w_pad+f_pad,stride=2)
             x = torch.nn.functional.conv3d(x, f.tile([self.out_channels, 1, 1, 1, 1]), groups=self.out_channels, stride=2)
         else:
             if self.up:
@@ -90,7 +90,7 @@ class Conv3d(torch.nn.Module):
             if self.down:
                 x = torch.nn.functional.conv3d(x, f.tile([self.in_channels, 1, 1, 1, 1]), groups=self.in_channels, stride=2, padding=f_pad)
             if w is not None:
-                x = torch.nn.functional.conv3d(x, w, padding=w_pad)
+                x = torch.nn.functional.conv3d(x, w, padding=w_pad, stride=2)
         if b is not None:
             x = x.add_(b.reshape(1, -1, 1, 1, 1))
         return x
@@ -474,7 +474,7 @@ class DhariwalUNet(torch.nn.Module):
 @persistence.persistent_class
 class VPPrecond(torch.nn.Module):
     def __init__(self,
-        img_resolution,                 # Image resolution.
+        data_resolution,                 # Image resolution.
         img_channels,                   # Number of color channels.
         label_dim       = 0,            # Number of class labels, 0 = unconditional.
         use_fp16        = False,        # Execute the underlying model at FP16 precision?
@@ -486,7 +486,7 @@ class VPPrecond(torch.nn.Module):
         **model_kwargs,                 # Keyword arguments for the underlying model.
     ):
         super().__init__()
-        self.img_resolution = img_resolution
+        self.data_resolution = data_resolution
         self.img_channels = img_channels
         self.label_dim = label_dim
         self.use_fp16 = use_fp16
@@ -496,7 +496,7 @@ class VPPrecond(torch.nn.Module):
         self.epsilon_t = epsilon_t
         self.sigma_min = float(self.sigma(epsilon_t))
         self.sigma_max = float(self.sigma(1))
-        self.model = globals()[model_type](img_resolution=img_resolution, in_channels=img_channels, out_channels=img_channels, label_dim=label_dim, **model_kwargs)
+        self.model = globals()[model_type](data_resolution=data_resolution, in_channels=img_channels, out_channels=img_channels, label_dim=label_dim, **model_kwargs)
 
     def forward(self, x, sigma, class_labels=None, force_fp32=False, **model_kwargs):
         x = x.to(torch.float32)
@@ -533,7 +533,7 @@ class VPPrecond(torch.nn.Module):
 @persistence.persistent_class
 class VEPrecond(torch.nn.Module):
     def __init__(self,
-        img_resolution,                 # Image resolution.
+        data_resolution,                 # Image resolution.
         img_channels,                   # Number of color channels.
         label_dim       = 0,            # Number of class labels, 0 = unconditional.
         use_fp16        = False,        # Execute the underlying model at FP16 precision?
@@ -543,13 +543,13 @@ class VEPrecond(torch.nn.Module):
         **model_kwargs,                 # Keyword arguments for the underlying model.
     ):
         super().__init__()
-        self.img_resolution = img_resolution
+        self.data_resolution = data_resolution
         self.img_channels = img_channels
         self.label_dim = label_dim
         self.use_fp16 = use_fp16
         self.sigma_min = sigma_min
         self.sigma_max = sigma_max
-        self.model = globals()[model_type](img_resolution=img_resolution, in_channels=img_channels, out_channels=img_channels, label_dim=label_dim, **model_kwargs)
+        self.model = globals()[model_type](data_resolution=data_resolution, in_channels=img_channels, out_channels=img_channels, label_dim=label_dim, **model_kwargs)
 
     def forward(self, x, sigma, class_labels=None, force_fp32=False, **model_kwargs):
         x = x.to(torch.float32)
@@ -577,7 +577,7 @@ class VEPrecond(torch.nn.Module):
 @persistence.persistent_class
 class iDDPMPrecond(torch.nn.Module):
     def __init__(self,
-        img_resolution,                     # Image resolution.
+        data_resolution,                     # Image resolution.
         img_channels,                       # Number of color channels.
         label_dim       = 0,                # Number of class labels, 0 = unconditional.
         use_fp16        = False,            # Execute the underlying model at FP16 precision?
@@ -588,14 +588,14 @@ class iDDPMPrecond(torch.nn.Module):
         **model_kwargs,                     # Keyword arguments for the underlying model.
     ):
         super().__init__()
-        self.img_resolution = img_resolution
+        self.data_resolution = data_resolution
         self.img_channels = img_channels
         self.label_dim = label_dim
         self.use_fp16 = use_fp16
         self.C_1 = C_1
         self.C_2 = C_2
         self.M = M
-        self.model = globals()[model_type](img_resolution=img_resolution, in_channels=img_channels, out_channels=img_channels*2, label_dim=label_dim, **model_kwargs)
+        self.model = globals()[model_type](data_resolution=data_resolution, in_channels=img_channels, out_channels=img_channels*2, label_dim=label_dim, **model_kwargs)
 
         u = torch.zeros(M + 1)
         for j in range(M, 0, -1): # M, ..., 1
@@ -637,7 +637,7 @@ class iDDPMPrecond(torch.nn.Module):
 @persistence.persistent_class
 class EDMPrecond(torch.nn.Module):
     def __init__(self,
-        img_resolution,                     # Image resolution.
+        data_resolution,                     # Image resolution.
         img_channels,                       # Number of color channels.
         label_dim       = 0,                # Number of class labels, 0 = unconditional.
         use_fp16        = False,            # Execute the underlying model at FP16 precision?
@@ -648,14 +648,14 @@ class EDMPrecond(torch.nn.Module):
         **model_kwargs,                     # Keyword arguments for the underlying model.
     ):
         super().__init__()
-        self.img_resolution = img_resolution
+        self.data_resolution = data_resolution
         self.img_channels = img_channels
         self.label_dim = label_dim
         self.use_fp16 = use_fp16
         self.sigma_min = sigma_min
         self.sigma_max = sigma_max
         self.sigma_data = sigma_data
-        self.model = globals()[model_type](img_resolution=img_resolution, in_channels=img_channels, out_channels=img_channels, label_dim=label_dim, **model_kwargs)
+        self.model = globals()[model_type](data_resolution=data_resolution, in_channels=img_channels, out_channels=img_channels, label_dim=label_dim, **model_kwargs)
 
     def forward(self, x, sigma, class_labels=None, force_fp32=False, **model_kwargs):
         x = x.to(torch.float32)

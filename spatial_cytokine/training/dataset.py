@@ -136,7 +136,7 @@ class FolderDataset3D(Dataset3D):
             raise IOError('Path must point to a directory or zip')
 
         # extension is npy right now maybe extend this to npz later if too little storage
-        self._image_fnames = sorted(fname for fname in self._all_fnames if self._file_ext(fname) == '.npy')
+        self._image_fnames = sorted(fname for fname in self._all_fnames if self._file_ext(fname) == '.npz')
         if len(self._image_fnames) == 0:
             raise IOError('No data files found in the specified path')
 
@@ -177,7 +177,7 @@ class FolderDataset3D(Dataset3D):
         fname = self._image_fnames[raw_idx]
         with self._open_file(fname) as f:
             data = np.load(f)
-            data = data.astype(np.float64)
+            data = data['arr_0'].astype(np.float64)
         if data.ndim == 3:
             data = data[:, :, :, np.newaxis] # DHW => DHWC
         data = data.transpose(3, 0, 1, 2) # DHWC => CDHW
