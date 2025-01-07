@@ -65,32 +65,34 @@ class Conv3d(torch.nn.Module):
         self.down = down
         self.fused_resample = fused_resample
         init_kwargs = dict(mode=init_mode, fan_in=in_channels*kernel**3, fan_out=out_channels*kernel**3)
-        self.weight = torch.nn.Parameter(weight_init([out_channels, in_channels, kernel, kernel], **init_kwargs) * init_weight) if kernel else None
+        self.weight = torch.nn.Parameter(weight_init([out_channels, in_channels, kernel, kernel, kernel], **init_kwargs) * init_weight) if kernel else None
         self.bias = torch.nn.Parameter(weight_init([out_channels], **init_kwargs) * init_bias) if kernel and bias else None
         f = torch.as_tensor(resample_filter, dtype=torch.float32)
         f = f.ger(f).unsqueeze(0).unsqueeze(1) / f.sum().pow(3)
         self.register_buffer('resample_filter', f if up or down else None)
 
     def forward(self, x):
+        print(f"Input shape: {x.shape}")
         w = self.weight.to(x.dtype) if self.weight is not None else None
+        print(f"Weight shape: {w.shape}")
         b = self.bias.to(x.dtype) if self.bias is not None else None
         f = self.resample_filter.to(x.dtype) if self.resample_filter is not None else None
         w_pad = w.shape[-1] // 2 if w is not None else 0
         f_pad = (f.shape[-1] - 1) // 2 if f is not None else 0
 
         if self.fused_resample and self.up and w is not None:
-            x = torch.nn.functional.conv_transpose3d(x, f.mul(8).tile([self.in_channels, 1, 1, 1, 1]), groups=self.in_channels, stride=2, padding=max(f_pad - w_pad, 0))
-            x = torch.nn.functional.conv3d(x, w, padding=max(w_pad - f_pad, 0),stride=2)
+            x = torch.nn.functional.conv_transpose3d(x, f.mul(8).tile([self.in_channels, 1, 1, 1, 1]), groups=self.in_channels, stride=(2,2,2), padding=max(f_pad - w_pad, 0))
+            x = torch.nn.functional.conv3d(x, w, padding=max(w_pad - f_pad, 0),stride=(2,2,2))
         elif self.fused_resample and self.down and w is not None:
-            x = torch.nn.functional.conv3d(x, w, padding=w_pad+f_pad,stride=2)
+            x = torch.nn.functional.conv3d(x, w, padding=w_pad+f_pad,stride=(2,2,2))
             x = torch.nn.functional.conv3d(x, f.tile([self.out_channels, 1, 1, 1, 1]), groups=self.out_channels, stride=2)
         else:
             if self.up:
-                x = torch.nn.functional.conv_transpose3d(x, f.mul(8).tile([self.in_channels, 1, 1, 1, 1]), groups=self.in_channels, stride=2, padding=f_pad)
+                x = torch.nn.functional.conv_transpose3d(x, f.mul(8).tile([self.in_channels, 1, 1, 1, 1]), groups=self.in_channels, stride=(2,2,2), padding=f_pad)
             if self.down:
-                x = torch.nn.functional.conv3d(x, f.tile([self.in_channels, 1, 1, 1, 1]), groups=self.in_channels, stride=2, padding=f_pad)
+                x = torch.nn.functional.conv3d(x, f.tile([self.in_channels, 1, 1, 1, 1]), groups=self.in_channels, stride=(2,2,2), padding=f_pad)
             if w is not None:
-                x = torch.nn.functional.conv3d(x, w, padding=w_pad, stride=2)
+                x = torch.nn.functional.conv3d(x, w, padding=w_pad, stride=(2,2,2))
         if b is not None:
             x = x.add_(b.reshape(1, -1, 1, 1, 1))
         return x
@@ -173,7 +175,7 @@ class UNetBlock(torch.nn.Module):
         orig = x
         x = self.conv0(silu(self.norm0(x)))
 
-        params = self.affine(emb).unsqueeze(2).unsqueeze(3).to(x.dtype)
+        params = self.affine(emb).unsqueeze(2).unsqueeze(3).unsqueeze(4).to(x.dtype)
         if self.adaptive_scale:
             scale, shift = params.chunk(chunks=2, dim=1)
             x = silu(torch.addcmul(shift, self.norm1(x), scale + 1))
@@ -659,7 +661,7 @@ class EDMPrecond(torch.nn.Module):
 
     def forward(self, x, sigma, class_labels=None, force_fp32=False, **model_kwargs):
         x = x.to(torch.float32)
-        sigma = sigma.to(torch.float32).reshape(-1, 1, 1, 1)
+        sigma = sigma.to(torch.float32).reshape(-1, 1, 1, 1, 1)
         class_labels = None if self.label_dim == 0 else torch.zeros([1, self.label_dim], device=x.device) if class_labels is None else class_labels.to(torch.float32).reshape(-1, self.label_dim)
         dtype = torch.float16 if (self.use_fp16 and not force_fp32 and x.device.type == 'cuda') else torch.float32
 

@@ -33,7 +33,7 @@ def training_loop(
     seed                = 0,        # Global random seed.
     batch_size          = 512,      # Total batch size for one training iteration.
     batch_gpu           = None,     # Limit batch size per GPU, None = no limit.
-    total_kimg          = 200000,   # Training duration, measured in thousands of training images.
+    total_kimg          = 200000,   # Training duration, measured in thousands of training data.
     ema_halflife_kimg   = 500,      # Half-life of the exponential moving average (EMA) of model weights.
     ema_rampup_ratio    = 0.05,     # EMA ramp-up coefficient, None = no rampup.
     lr_rampup_kimg      = 10000,    # Learning rate ramp-up duration.
@@ -76,10 +76,10 @@ def training_loop(
     net.train().requires_grad_(True).to(device)
     if dist.get_rank() == 0:
         with torch.no_grad():
-            images = torch.zeros([batch_gpu, net.img_channels, net.data_resolution, net.data_resolution], device=device)
+            data = torch.zeros([batch_gpu, net.img_channels, net.data_resolution, net.data_resolution, net.data_resolution], device=device)
             sigma = torch.ones([batch_gpu], device=device)
             labels = torch.zeros([batch_gpu, net.label_dim], device=device)
-            misc.print_module_summary(net, [images, sigma, labels], max_nesting=2)
+            misc.print_module_summary(net, [data, sigma, labels], max_nesting=2)
 
     # Setup optimizer.
     dist.print0('Setting up optimizer...')
@@ -87,11 +87,8 @@ def training_loop(
     optimizer = dnnlib.util.construct_class_by_name(params=net.parameters(), **optimizer_kwargs) # subclass of torch.optim.Optimizer
     augment_pipe = dnnlib.util.construct_class_by_name(**augment_kwargs) if augment_kwargs is not None else None # training.augment.AugmentPipe
     
-    if device.type == 'cuda':
-        ddp = torch.nn.parallel.DistributedDataParallel(net, device_ids=[device.index], broadcast_buffers=False)
-    else:
-        ddp = torch.nn.parallel.DistributedDataParallel(net)
     ddp = torch.nn.parallel.DistributedDataParallel(net, device_ids=[device], broadcast_buffers=False)
+    #ddp = net
     ema = copy.deepcopy(net).eval().requires_grad_(False)
 
     # Resume training from previous snapshot.
@@ -129,10 +126,10 @@ def training_loop(
         optimizer.zero_grad(set_to_none=True)
         for round_idx in range(num_accumulation_rounds):
             with misc.ddp_sync(ddp, (round_idx == num_accumulation_rounds - 1)):
-                images, labels = next(dataset_iterator)
-                images = images.to(device).to(torch.float32) # normalize to -1..+1
+                data, labels = next(dataset_iterator)
+                data = data.to(device).to(torch.float32) # normalize to -1..+1
                 labels = labels.to(device)
-                loss = loss_fn(net=ddp, images=images, labels=labels, augment_pipe=augment_pipe)
+                loss = loss_fn(net=ddp, data=data, labels=labels, augment_pipe=augment_pipe)
                 training_stats.report('Loss/loss', loss)
                 loss.sum().mul(loss_scaling / batch_gpu_total).backward()
 
