@@ -291,14 +291,14 @@ class DRUNet(torch.nn.Module):
 
         self.m_tail = conv(in_channels=nc[0], out_channels=out_channels, kernel_size=3, padding=1, bias=bias)
 
-    def forward(self, x: torch.Tensor, t: torch.Tensor, y: torch.Tensor = None) -> torch.Tensor:
-        # t: noise_labels, y: class_labels
-
-        emb = self.t_embedder(t.view(x.shape[0], -1))  # (B, D)
+    def forward(
+        self, x: torch.Tensor, noise_labels: torch.Tensor, class_labels: torch.Tensor, augment_labels=None
+    ) -> torch.Tensor:
+        emb = self.t_embedder(noise_labels.view(x.shape[0], -1))  # (B, D)
 
         if self.y_embedder is not None:
-            y = self.y_embedder(y.flatten(), self.training)  # (B, D)
-            emb = emb + y
+            class_labels = self.y_embedder(class_labels.flatten(), self.training)  # (B, D)
+            emb = emb + class_labels
 
         x1 = self.m_head(x)
         x1 = self.m_enc1(x1, emb)
