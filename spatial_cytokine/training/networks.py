@@ -115,9 +115,9 @@ class Conv3d(torch.nn.Module):
                 stride=2,
                 padding=max(f_pad - w_pad, 0),
             )
-            x = torch.nn.functional.conv3d(x, w, padding=max(w_pad - f_pad, 0), stride=2)
+            x = torch.nn.functional.conv3d(x, w, padding=max(w_pad - f_pad, 0))
         elif self.fused_resample and self.down and w is not None:
-            x = torch.nn.functional.conv3d(x, w, padding=w_pad + f_pad, stride=2)
+            x = torch.nn.functional.conv3d(x, w, padding=w_pad + f_pad)
             x = torch.nn.functional.conv3d(
                 x, f.tile([self.out_channels, 1, 1, 1, 1]), groups=self.out_channels, stride=2
             )
