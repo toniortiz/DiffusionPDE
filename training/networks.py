@@ -1,3 +1,9 @@
+# TODOS:
+# weight_init should be fine
+# Linear layer should be fine
+# Need to rework convolutional2d layer -> Conv3d Layer done
+# Need to rework
+
 # Copyright (c) 2022, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 #
 # This work is licensed under a Creative Commons
@@ -46,7 +52,7 @@ class Linear(torch.nn.Module):
 # Convolutional layer with optional up/downsampling.
 
 @persistence.persistent_class
-class Conv2d(torch.nn.Module):
+class Conv3d(torch.nn.Module):
     def __init__(self,
         in_channels, out_channels, kernel, bias=True, up=False, down=False,
         resample_filter=[1,1], fused_resample=False, init_mode='kaiming_normal', init_weight=1, init_bias=0,
@@ -58,11 +64,12 @@ class Conv2d(torch.nn.Module):
         self.up = up
         self.down = down
         self.fused_resample = fused_resample
-        init_kwargs = dict(mode=init_mode, fan_in=in_channels*kernel*kernel, fan_out=out_channels*kernel*kernel)
-        self.weight = torch.nn.Parameter(weight_init([out_channels, in_channels, kernel, kernel], **init_kwargs) * init_weight) if kernel else None
+        init_kwargs = dict(mode=init_mode, fan_in=in_channels*kernel**3, fan_out=out_channels*kernel**3)
+        self.weight = torch.nn.Parameter(weight_init([out_channels, in_channels, kernel, kernel, kernel], **init_kwargs) * init_weight) if kernel else None
         self.bias = torch.nn.Parameter(weight_init([out_channels], **init_kwargs) * init_bias) if kernel and bias else None
         f = torch.as_tensor(resample_filter, dtype=torch.float32)
-        f = f.ger(f).unsqueeze(0).unsqueeze(1) / f.sum().square()
+        #f = f.ger(f).unsqueeze(0).unsqueeze(1) / f.sum().pow(3)
+        f = torch.einsum("i,j,k->ijk", f, f, f).unsqueeze(0).unsqueeze(1) / (f.sum().pow(3))
         self.register_buffer('resample_filter', f if up or down else None)
 
     def forward(self, x):
@@ -73,20 +80,20 @@ class Conv2d(torch.nn.Module):
         f_pad = (f.shape[-1] - 1) // 2 if f is not None else 0
 
         if self.fused_resample and self.up and w is not None:
-            x = torch.nn.functional.conv_transpose2d(x, f.mul(4).tile([self.in_channels, 1, 1, 1]), groups=self.in_channels, stride=2, padding=max(f_pad - w_pad, 0))
-            x = torch.nn.functional.conv2d(x, w, padding=max(w_pad - f_pad, 0))
+            x = torch.nn.functional.conv_transpose3d(x, f.mul(4).tile([self.in_channels, 1, 1, 1, 1]), groups=self.in_channels, stride=2, padding=max(f_pad - w_pad, 0))
+            x = torch.nn.functional.conv3d(x, w, padding=max(w_pad - f_pad, 0),stride=2)
         elif self.fused_resample and self.down and w is not None:
-            x = torch.nn.functional.conv2d(x, w, padding=w_pad+f_pad)
-            x = torch.nn.functional.conv2d(x, f.tile([self.out_channels, 1, 1, 1]), groups=self.out_channels, stride=2)
+            x = torch.nn.functional.conv3d(x, w, padding=w_pad+f_pad,stride=2)
+            x = torch.nn.functional.conv3d(x, f.tile([self.out_channels, 1, 1, 1, 1]), groups=self.out_channels, stride=2)
         else:
             if self.up:
-                x = torch.nn.functional.conv_transpose2d(x, f.mul(4).tile([self.in_channels, 1, 1, 1]), groups=self.in_channels, stride=2, padding=f_pad)
+                x = torch.nn.functional.conv_transpose3d(x, f.mul(4).tile([self.in_channels, 1, 1, 1, 1]), groups=self.in_channels, stride=2, padding=f_pad)
             if self.down:
-                x = torch.nn.functional.conv2d(x, f.tile([self.in_channels, 1, 1, 1]), groups=self.in_channels, stride=2, padding=f_pad)
+                x = torch.nn.functional.conv3d(x, f.tile([self.in_channels, 1, 1, 1, 1]), groups=self.in_channels, stride=2, padding=f_pad)
             if w is not None:
-                x = torch.nn.functional.conv2d(x, w, padding=w_pad)
+                x = torch.nn.functional.conv3d(x, w, padding=w_pad)
         if b is not None:
-            x = x.add_(b.reshape(1, -1, 1, 1))
+            x = x.add_(b.reshape(1, -1, 1, 1, 1))
         return x
 
 #----------------------------------------------------------------------------
@@ -148,33 +155,43 @@ class UNetBlock(torch.nn.Module):
         self.adaptive_scale = adaptive_scale
 
         self.norm0 = GroupNorm(num_channels=in_channels, eps=eps)
-        self.conv0 = Conv2d(in_channels=in_channels, out_channels=out_channels, kernel=3, up=up, down=down, resample_filter=resample_filter, **init)
+        self.conv0 = Conv3d(in_channels=in_channels, out_channels=out_channels, kernel=3, up=up, down=down, resample_filter=resample_filter, **init)
         self.affine = Linear(in_features=emb_channels, out_features=out_channels*(2 if adaptive_scale else 1), **init)
         self.norm1 = GroupNorm(num_channels=out_channels, eps=eps)
-        self.conv1 = Conv2d(in_channels=out_channels, out_channels=out_channels, kernel=3, **init_zero)
+        self.conv1 = Conv3d(in_channels=out_channels, out_channels=out_channels, kernel=3, **init_zero)
 
         self.skip = None
         if out_channels != in_channels or up or down:
             kernel = 1 if resample_proj or out_channels!= in_channels else 0
-            self.skip = Conv2d(in_channels=in_channels, out_channels=out_channels, kernel=kernel, up=up, down=down, resample_filter=resample_filter, **init)
+            self.skip = Conv3d(in_channels=in_channels, out_channels=out_channels, kernel=kernel, up=up, down=down, resample_filter=resample_filter, **init)
 
         if self.num_heads:
             self.norm2 = GroupNorm(num_channels=out_channels, eps=eps)
-            self.qkv = Conv2d(in_channels=out_channels, out_channels=out_channels*3, kernel=1, **(init_attn if init_attn is not None else init))
-            self.proj = Conv2d(in_channels=out_channels, out_channels=out_channels, kernel=1, **init_zero)
+            self.qkv = Conv3d(in_channels=out_channels, out_channels=out_channels*3, kernel=1, **(init_attn if init_attn is not None else init))
+            self.proj = Conv3d(in_channels=out_channels, out_channels=out_channels, kernel=1, **init_zero)
 
     def forward(self, x, emb):
         orig = x
+
+        print("X shape 0: ", x.shape)
+
         x = self.conv0(silu(self.norm0(x)))
 
-        params = self.affine(emb).unsqueeze(2).unsqueeze(3).to(x.dtype)
+        print("X shape 1: ", x.shape)
+
+        params = self.affine(emb).unsqueeze(2).unsqueeze(3).unsqueeze(4).to(x.dtype)
         if self.adaptive_scale:
             scale, shift = params.chunk(chunks=2, dim=1)
             x = silu(torch.addcmul(shift, self.norm1(x), scale + 1))
         else:
             x = silu(self.norm1(x.add_(params)))
 
+        print("X shape 2: ", x.shape)
+
         x = self.conv1(torch.nn.functional.dropout(x, p=self.dropout, training=self.training))
+        
+        print("X shape 3: ", x.shape)
+        print(f"Orig shape: {orig.shape}")
         x = x.add_(self.skip(orig) if self.skip is not None else orig)
         x = x * self.skip_scale
 
@@ -228,7 +245,7 @@ class FourierEmbedding(torch.nn.Module):
 @persistence.persistent_class
 class SongUNet(torch.nn.Module):
     def __init__(self,
-        img_resolution,                     # Image resolution at input/output.
+        data_resolution,                     # resolution of the 3d data at input/output.
         in_channels,                        # Number of color channels at input.
         out_channels,                       # Number of color channels at output.
         label_dim           = 0,            # Number of class labels, 0 = unconditional.
@@ -277,18 +294,18 @@ class SongUNet(torch.nn.Module):
         cout = in_channels
         caux = in_channels
         for level, mult in enumerate(channel_mult):
-            res = img_resolution >> level
+            res = data_resolution >> level
             if level == 0:
                 cin = cout
                 cout = model_channels
-                self.enc[f'{res}x{res}_conv'] = Conv2d(in_channels=cin, out_channels=cout, kernel=3, **init)
+                self.enc[f'{res}x{res}_conv'] = Conv3d(in_channels=cin, out_channels=cout, kernel=3, **init)
             else:
                 self.enc[f'{res}x{res}_down'] = UNetBlock(in_channels=cout, out_channels=cout, down=True, **block_kwargs)
                 if encoder_type == 'skip':
-                    self.enc[f'{res}x{res}_aux_down'] = Conv2d(in_channels=caux, out_channels=caux, kernel=0, down=True, resample_filter=resample_filter)
-                    self.enc[f'{res}x{res}_aux_skip'] = Conv2d(in_channels=caux, out_channels=cout, kernel=1, **init)
+                    self.enc[f'{res}x{res}_aux_down'] = Conv3d(in_channels=caux, out_channels=caux, kernel=0, down=True, resample_filter=resample_filter)
+                    self.enc[f'{res}x{res}_aux_skip'] = Conv3d(in_channels=caux, out_channels=cout, kernel=1, **init)
                 if encoder_type == 'residual':
-                    self.enc[f'{res}x{res}_aux_residual'] = Conv2d(in_channels=caux, out_channels=cout, kernel=3, down=True, resample_filter=resample_filter, fused_resample=True, **init)
+                    self.enc[f'{res}x{res}_aux_residual'] = Conv3d(in_channels=caux, out_channels=cout, kernel=3, down=True, resample_filter=resample_filter, fused_resample=True, **init)
                     caux = cout
             for idx in range(num_blocks):
                 cin = cout
@@ -300,7 +317,7 @@ class SongUNet(torch.nn.Module):
         # Decoder.
         self.dec = torch.nn.ModuleDict()
         for level, mult in reversed(list(enumerate(channel_mult))):
-            res = img_resolution >> level
+            res = data_resolution >> level
             if level == len(channel_mult) - 1:
                 self.dec[f'{res}x{res}_in0'] = UNetBlock(in_channels=cout, out_channels=cout, attention=True, **block_kwargs)
                 self.dec[f'{res}x{res}_in1'] = UNetBlock(in_channels=cout, out_channels=cout, **block_kwargs)
@@ -313,9 +330,9 @@ class SongUNet(torch.nn.Module):
                 self.dec[f'{res}x{res}_block{idx}'] = UNetBlock(in_channels=cin, out_channels=cout, attention=attn, **block_kwargs)
             if decoder_type == 'skip' or level == 0:
                 if decoder_type == 'skip' and level < len(channel_mult) - 1:
-                    self.dec[f'{res}x{res}_aux_up'] = Conv2d(in_channels=out_channels, out_channels=out_channels, kernel=0, up=True, resample_filter=resample_filter)
+                    self.dec[f'{res}x{res}_aux_up'] = Conv3d(in_channels=out_channels, out_channels=out_channels, kernel=0, up=True, resample_filter=resample_filter)
                 self.dec[f'{res}x{res}_aux_norm'] = GroupNorm(num_channels=cout, eps=1e-6)
-                self.dec[f'{res}x{res}_aux_conv'] = Conv2d(in_channels=cout, out_channels=out_channels, kernel=3, **init_zero)
+                self.dec[f'{res}x{res}_aux_conv'] = Conv3d(in_channels=cout, out_channels=out_channels, kernel=3, **init_zero)
 
     def forward(self, x, noise_labels, class_labels, augment_labels=None):
         # Mapping.
@@ -371,7 +388,7 @@ class SongUNet(torch.nn.Module):
 @persistence.persistent_class
 class DhariwalUNet(torch.nn.Module):
     def __init__(self,
-        img_resolution,                     # Image resolution at input/output.
+        data_resolution,                     # Image resolution at input/output.
         in_channels,                        # Number of color channels at input.
         out_channels,                       # Number of color channels at output.
         label_dim           = 0,            # Number of class labels, 0 = unconditional.
@@ -403,11 +420,11 @@ class DhariwalUNet(torch.nn.Module):
         self.enc = torch.nn.ModuleDict()
         cout = in_channels
         for level, mult in enumerate(channel_mult):
-            res = img_resolution >> level
+            res = data_resolution >> level
             if level == 0:
                 cin = cout
                 cout = model_channels * mult
-                self.enc[f'{res}x{res}_conv'] = Conv2d(in_channels=cin, out_channels=cout, kernel=3, **init)
+                self.enc[f'{res}x{res}_conv'] = Conv3d(in_channels=cin, out_channels=cout, kernel=3, **init)
             else:
                 self.enc[f'{res}x{res}_down'] = UNetBlock(in_channels=cout, out_channels=cout, down=True, **block_kwargs)
             for idx in range(num_blocks):
@@ -419,7 +436,7 @@ class DhariwalUNet(torch.nn.Module):
         # Decoder.
         self.dec = torch.nn.ModuleDict()
         for level, mult in reversed(list(enumerate(channel_mult))):
-            res = img_resolution >> level
+            res = data_resolution >> level
             if level == len(channel_mult) - 1:
                 self.dec[f'{res}x{res}_in0'] = UNetBlock(in_channels=cout, out_channels=cout, attention=True, **block_kwargs)
                 self.dec[f'{res}x{res}_in1'] = UNetBlock(in_channels=cout, out_channels=cout, **block_kwargs)
@@ -430,7 +447,7 @@ class DhariwalUNet(torch.nn.Module):
                 cout = model_channels * mult
                 self.dec[f'{res}x{res}_block{idx}'] = UNetBlock(in_channels=cin, out_channels=cout, attention=(res in attn_resolutions), **block_kwargs)
         self.out_norm = GroupNorm(num_channels=cout)
-        self.out_conv = Conv2d(in_channels=cout, out_channels=out_channels, kernel=3, **init_zero)
+        self.out_conv = Conv3d(in_channels=cout, out_channels=out_channels, kernel=3, **init_zero)
 
     def forward(self, x, noise_labels, class_labels, augment_labels=None):
         # Mapping.
@@ -468,7 +485,7 @@ class DhariwalUNet(torch.nn.Module):
 @persistence.persistent_class
 class VPPrecond(torch.nn.Module):
     def __init__(self,
-        img_resolution,                 # Image resolution.
+        data_resolution,                 # Image resolution.
         img_channels,                   # Number of color channels.
         label_dim       = 0,            # Number of class labels, 0 = unconditional.
         use_fp16        = False,        # Execute the underlying model at FP16 precision?
@@ -480,7 +497,7 @@ class VPPrecond(torch.nn.Module):
         **model_kwargs,                 # Keyword arguments for the underlying model.
     ):
         super().__init__()
-        self.img_resolution = img_resolution
+        self.data_resolution = data_resolution
         self.img_channels = img_channels
         self.label_dim = label_dim
         self.use_fp16 = use_fp16
@@ -490,7 +507,7 @@ class VPPrecond(torch.nn.Module):
         self.epsilon_t = epsilon_t
         self.sigma_min = float(self.sigma(epsilon_t))
         self.sigma_max = float(self.sigma(1))
-        self.model = globals()[model_type](img_resolution=img_resolution, in_channels=img_channels, out_channels=img_channels, label_dim=label_dim, **model_kwargs)
+        self.model = globals()[model_type](data_resolution=data_resolution, in_channels=img_channels, out_channels=img_channels, label_dim=label_dim, **model_kwargs)
 
     def forward(self, x, sigma, class_labels=None, force_fp32=False, **model_kwargs):
         x = x.to(torch.float32)
@@ -527,7 +544,7 @@ class VPPrecond(torch.nn.Module):
 @persistence.persistent_class
 class VEPrecond(torch.nn.Module):
     def __init__(self,
-        img_resolution,                 # Image resolution.
+        data_resolution,                 # Image resolution.
         img_channels,                   # Number of color channels.
         label_dim       = 0,            # Number of class labels, 0 = unconditional.
         use_fp16        = False,        # Execute the underlying model at FP16 precision?
@@ -537,13 +554,13 @@ class VEPrecond(torch.nn.Module):
         **model_kwargs,                 # Keyword arguments for the underlying model.
     ):
         super().__init__()
-        self.img_resolution = img_resolution
+        self.data_resolution = data_resolution
         self.img_channels = img_channels
         self.label_dim = label_dim
         self.use_fp16 = use_fp16
         self.sigma_min = sigma_min
         self.sigma_max = sigma_max
-        self.model = globals()[model_type](img_resolution=img_resolution, in_channels=img_channels, out_channels=img_channels, label_dim=label_dim, **model_kwargs)
+        self.model = globals()[model_type](data_resolution=data_resolution, in_channels=img_channels, out_channels=img_channels, label_dim=label_dim, **model_kwargs)
 
     def forward(self, x, sigma, class_labels=None, force_fp32=False, **model_kwargs):
         x = x.to(torch.float32)
@@ -571,7 +588,7 @@ class VEPrecond(torch.nn.Module):
 @persistence.persistent_class
 class iDDPMPrecond(torch.nn.Module):
     def __init__(self,
-        img_resolution,                     # Image resolution.
+        data_resolution,                     # Image resolution.
         img_channels,                       # Number of color channels.
         label_dim       = 0,                # Number of class labels, 0 = unconditional.
         use_fp16        = False,            # Execute the underlying model at FP16 precision?
@@ -582,14 +599,14 @@ class iDDPMPrecond(torch.nn.Module):
         **model_kwargs,                     # Keyword arguments for the underlying model.
     ):
         super().__init__()
-        self.img_resolution = img_resolution
+        self.data_resolution = data_resolution
         self.img_channels = img_channels
         self.label_dim = label_dim
         self.use_fp16 = use_fp16
         self.C_1 = C_1
         self.C_2 = C_2
         self.M = M
-        self.model = globals()[model_type](img_resolution=img_resolution, in_channels=img_channels, out_channels=img_channels*2, label_dim=label_dim, **model_kwargs)
+        self.model = globals()[model_type](data_resolution=data_resolution, in_channels=img_channels, out_channels=img_channels*2, label_dim=label_dim, **model_kwargs)
 
         u = torch.zeros(M + 1)
         for j in range(M, 0, -1): # M, ..., 1
@@ -631,7 +648,7 @@ class iDDPMPrecond(torch.nn.Module):
 @persistence.persistent_class
 class EDMPrecond(torch.nn.Module):
     def __init__(self,
-        img_resolution,                     # Image resolution.
+        data_resolution,                     # Image resolution.
         img_channels,                       # Number of color channels.
         label_dim       = 0,                # Number of class labels, 0 = unconditional.
         use_fp16        = False,            # Execute the underlying model at FP16 precision?
@@ -642,18 +659,18 @@ class EDMPrecond(torch.nn.Module):
         **model_kwargs,                     # Keyword arguments for the underlying model.
     ):
         super().__init__()
-        self.img_resolution = img_resolution
+        self.data_resolution = data_resolution
         self.img_channels = img_channels
         self.label_dim = label_dim
         self.use_fp16 = use_fp16
         self.sigma_min = sigma_min
         self.sigma_max = sigma_max
         self.sigma_data = sigma_data
-        self.model = globals()[model_type](img_resolution=img_resolution, in_channels=img_channels, out_channels=img_channels, label_dim=label_dim, **model_kwargs)
+        self.model = globals()[model_type](data_resolution=data_resolution, in_channels=img_channels, out_channels=img_channels, label_dim=label_dim, **model_kwargs)
 
     def forward(self, x, sigma, class_labels=None, force_fp32=False, **model_kwargs):
         x = x.to(torch.float32)
-        sigma = sigma.to(torch.float32).reshape(-1, 1, 1, 1)
+        sigma = sigma.to(torch.float32).reshape(-1, 1, 1, 1, 1)
         class_labels = None if self.label_dim == 0 else torch.zeros([1, self.label_dim], device=x.device) if class_labels is None else class_labels.to(torch.float32).reshape(-1, self.label_dim)
         dtype = torch.float16 if (self.use_fp16 and not force_fp32 and x.device.type == 'cuda') else torch.float32
 

@@ -94,7 +94,7 @@ def main(**kwargs):
 
     # Initialize config dict.
     c = dnnlib.EasyDict()
-    c.dataset_kwargs = dnnlib.EasyDict(class_name='training.dataset.ImageFolderDataset', path=opts.data, use_labels=opts.cond, xflip=opts.xflip, cache=opts.cache)
+    c.dataset_kwargs = dnnlib.EasyDict(class_name='training.dataset.FolderDataset3D', path=opts.data)
     c.data_loader_kwargs = dnnlib.EasyDict(pin_memory=True, num_workers=opts.workers, prefetch_factor=2)
     c.network_kwargs = dnnlib.EasyDict()
     c.loss_kwargs = dnnlib.EasyDict()
@@ -136,14 +136,11 @@ def main(**kwargs):
         c.loss_kwargs.class_name = 'training.loss.EDMLoss'
 
     # Network options.
+    # First, do it without augmentation to make it simpler and see if it works
     if opts.cbase is not None:
         c.network_kwargs.model_channels = opts.cbase
     if opts.cres is not None:
         c.network_kwargs.channel_mult = opts.cres
-    if opts.augment:
-        c.augment_kwargs = dnnlib.EasyDict(class_name='training.augment.AugmentPipe', p=opts.augment)
-        c.augment_kwargs.update(xflip=1e8, yflip=1, scale=1, rotate_frac=1, aniso=1, translate_frac=1)
-        c.network_kwargs.augment_dim = 9
     c.network_kwargs.update(dropout=opts.dropout, use_fp16=opts.fp16)
 
     # Training options.
@@ -176,7 +173,7 @@ def main(**kwargs):
         c.resume_state_dump = opts.resume
 
     # Description string.
-    cond_str = 'cond' if c.dataset_kwargs.use_labels else 'uncond'
+    cond_str = 'uncond'
     dtype_str = 'fp16' if c.network_kwargs.use_fp16 else 'fp32'
     desc = f'{dataset_name:s}-{cond_str:s}-{opts.arch:s}-{opts.precond:s}-gpus{dist.get_world_size():d}-batch{c.batch_size:d}-{dtype_str:s}'
     if opts.desc is not None:
@@ -204,7 +201,6 @@ def main(**kwargs):
     dist.print0()
     dist.print0(f'Output directory:        {c.run_dir}')
     dist.print0(f'Dataset path:            {c.dataset_kwargs.path}')
-    dist.print0(f'Class-conditional:       {c.dataset_kwargs.use_labels}')
     dist.print0(f'Network architecture:    {opts.arch}')
     dist.print0(f'Preconditioning & loss:  {opts.precond}')
     dist.print0(f'Number of GPUs:          {dist.get_world_size()}')

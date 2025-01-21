@@ -24,10 +24,8 @@ def init():
         os.environ['WORLD_SIZE'] = '1'
 
     torch.distributed.init_process_group(backend='gloo', init_method='env://')
-
-    sync_device = torch.device('cpu') if get_world_size() > 1 else None
+    sync_device = torch.device('cuda') if get_world_size() > 1 else None
     training_stats.init_multiprocessing(rank=get_rank(), sync_device=sync_device)
-
 #----------------------------------------------------------------------------
 
 def get_rank():

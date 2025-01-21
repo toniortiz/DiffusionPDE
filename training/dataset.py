@@ -1,78 +1,47 @@
-# Copyright (c) 2022, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-#
-# This work is licensed under a Creative Commons
-# Attribution-NonCommercial-ShareAlike 4.0 International License.
-# You should have received a copy of the license along with this
-# work. If not, see http://creativecommons.org/licenses/by-nc-sa/4.0/
+# FINISHED
+# Replicating the existing Dataset classes for 3d data
 
-"""Streaming images and labels from datasets created with dataset_tool.py."""
+"""Streaming 3d data from datasets"""
 
 import os
 import numpy as np
 import zipfile
-import PIL.Image
 import json
 import torch
 import dnnlib
 
-try:
-    import pyspng
-except ImportError:
-    pyspng = None
-
 #----------------------------------------------------------------------------
 # Abstract base class for datasets.
-
-class Dataset(torch.utils.data.Dataset):
+# don't need labels, as we are not using them -> Diffusion PDE paper does not use labels either
+# See their example call to train the darcy model: torchrun --standalone --nproc_per_node=3 train.py --outdir=pretrained-darcy-new --data=/data/Darcy-merged/ --cond=0 --arch=ddpmpp --batch=60 --batch-gpu=20 --tick=10 --snap=50 --dump=100 --duration=20 --ema=0.05
+# -> --cond = 0 means no labels
+class Dataset3D(torch.utils.data.Dataset):
     def __init__(self,
         name,                   # Name of the dataset.
-        raw_shape,              # Shape of the raw image data (NCHW).
+        raw_shape,              # Shape of the raw image data (NCDHW).
         max_size    = None,     # Artificially limit the size of the dataset. None = no limit. Applied before xflip.
-        use_labels  = False,    # Enable conditioning labels? False = label dimension is zero.
-        xflip       = False,    # Artificially double the size of the dataset via x-flips. Applied after max_size.
-        random_seed = 0,        # Random seed to use when applying max_size.
-        cache       = False,    # Cache images in CPU memory?
+        random_seed = 0        # Random seed to use when applying max_size.
     ):
         self._name = name
         self._raw_shape = list(raw_shape)
-        self._use_labels = use_labels
-        self._cache = cache
-        self._cached_images = dict() # {raw_idx: np.ndarray, ...}
-        self._raw_labels = None
-        self._label_shape = None
 
         # Apply max_size.
         self._raw_idx = np.arange(self._raw_shape[0], dtype=np.int64)
         if (max_size is not None) and (self._raw_idx.size > max_size):
             np.random.RandomState(random_seed % (1 << 31)).shuffle(self._raw_idx)
             self._raw_idx = np.sort(self._raw_idx[:max_size])
-
-        # Apply xflip.
-        self._xflip = np.zeros(self._raw_idx.size, dtype=np.float64)
-        if xflip:
-            self._raw_idx = np.tile(self._raw_idx, 2)
-            self._xflip = np.concatenate([self._xflip, np.ones_like(self._xflip)])
+        # Initialize labels as bunch of zeros
+        self._raw_labels = np.zeros([self._raw_shape[0], 0], dtype=np.float32)
+        self._label_shape = None
 
     def _get_raw_labels(self):
-        if self._raw_labels is None:
-            self._raw_labels = self._load_raw_labels() if self._use_labels else None
-            if self._raw_labels is None:
-                self._raw_labels = np.zeros([self._raw_shape[0], 0], dtype=np.float32)
-            assert isinstance(self._raw_labels, np.ndarray)
-            assert self._raw_labels.shape[0] == self._raw_shape[0]
-            assert self._raw_labels.dtype in [np.float32, np.int64]
-            if self._raw_labels.dtype == np.int64:
-                assert self._raw_labels.ndim == 1
-                assert np.all(self._raw_labels >= 0)
+        # return the zero labels
         return self._raw_labels
 
     def close(self): # to be overridden by subclass
         pass
 
-    def _load_raw_image(self, raw_idx): # to be overridden by subclass
-        raise NotImplementedError
-
-    def _load_raw_labels(self): # to be overridden by subclass
+    def _load_raw_data(self, raw_idx): # to be overridden by subclass
         raise NotImplementedError
 
     def __getstate__(self):
@@ -89,32 +58,19 @@ class Dataset(torch.utils.data.Dataset):
 
     def __getitem__(self, idx):
         raw_idx = self._raw_idx[idx]
-        image = self._cached_images.get(raw_idx, None)
-        if image is None:
-            image = self._load_raw_image(raw_idx)
-            if self._cache:
-                self._cached_images[raw_idx] = image
-        assert isinstance(image, np.ndarray)
-        assert list(image.shape) == self.image_shape
-        assert image.dtype == np.float64
-        # assert image.dtype == np.uint8
-        if self._xflip[idx]:
-            assert image.ndim == 3 # CHW
-            image = image[:, :, ::-1]
-        return image.copy(), self.get_label(idx)
+        data = self._load_raw_data(raw_idx)
+        assert isinstance(data, np.ndarray)
+        assert list(data.shape) == self.data_shape
+        assert data.dtype == np.float64
+        return data.copy(), self.get_label(idx)
 
     def get_label(self, idx):
         label = self._get_raw_labels()[self._raw_idx[idx]]
-        if label.dtype == np.int64:
-            onehot = np.zeros(self.label_shape, dtype=np.float32)
-            onehot[label] = 1
-            label = onehot
         return label.copy()
 
     def get_details(self, idx):
         d = dnnlib.EasyDict()
         d.raw_idx = int(self._raw_idx[idx])
-        d.xflip = (int(self._xflip[idx]) != 0)
         d.raw_label = self._get_raw_labels()[d.raw_idx].copy()
         return d
 
@@ -123,28 +79,25 @@ class Dataset(torch.utils.data.Dataset):
         return self._name
 
     @property
-    def image_shape(self):
+    def data_shape(self):
         return list(self._raw_shape[1:])
 
     @property
     def num_channels(self):
-        assert len(self.image_shape) == 3 # CHW
-        return self.image_shape[0]
+        assert len(self.data_shape) == 4 # CDHW
+        return self.data_shape[0]
 
     @property
     def resolution(self):
-        assert len(self.image_shape) == 3 # CHW
-        assert self.image_shape[1] == self.image_shape[2]
-        return self.image_shape[1]
+        assert len(self.data_shape) == 4 # CDHW
+        assert self.data_shape[1] == self.data_shape[2] == self.data_shape[3]
+        return self.data_shape[1]
 
     @property
     def label_shape(self):
         if self._label_shape is None:
             raw_labels = self._get_raw_labels()
-            if raw_labels.dtype == np.int64:
-                self._label_shape = [int(np.max(raw_labels)) + 1]
-            else:
-                self._label_shape = raw_labels.shape[1:]
+            self._label_shape = raw_labels.shape[1:]
         return list(self._label_shape)
 
     @property
@@ -161,18 +114,16 @@ class Dataset(torch.utils.data.Dataset):
         return self._get_raw_labels().dtype == np.int64
 
 #----------------------------------------------------------------------------
-# Dataset subclass that loads images recursively from the specified directory
+# Dataset subclass that loads the data recursively from the specified directory
 # or ZIP file.
 
-class ImageFolderDataset(Dataset):
+class FolderDataset3D(Dataset3D):
     def __init__(self,
         path,                   # Path to directory or zip.
         resolution      = None, # Ensure specific resolution, None = highest available.
-        use_pyspng      = True, # Use pyspng if available?
         **super_kwargs,         # Additional arguments for the Dataset base class.
     ):
         self._path = path
-        self._use_pyspng = use_pyspng
         self._zipfile = None
 
         if os.path.isdir(self._path):
@@ -184,16 +135,14 @@ class ImageFolderDataset(Dataset):
         else:
             raise IOError('Path must point to a directory or zip')
 
-        PIL.Image.init()
-        # extension could also be .npy
-        self._image_fnames = sorted(fname for fname in self._all_fnames if self._file_ext(fname) in PIL.Image.EXTENSION or self._file_ext(fname) == '.npy')
+        self._image_fnames = sorted(fname for fname in self._all_fnames if self._file_ext(fname) == '.npz')
         if len(self._image_fnames) == 0:
-            raise IOError('No image files found in the specified path')
+            raise IOError('No data files found in the specified path')
 
         name = os.path.splitext(os.path.basename(self._path))[0]
-        raw_shape = [len(self._image_fnames)] + list(self._load_raw_image(0).shape)
+        raw_shape = [len(self._image_fnames)] + list(self._load_raw_data(0).shape)
         if resolution is not None and (raw_shape[2] != resolution or raw_shape[3] != resolution):
-            raise IOError('Image files do not match the specified resolution')
+            raise IOError('Data files do not match the specified resolution')
         super().__init__(name=name, raw_shape=raw_shape, **super_kwargs)
 
     @staticmethod
@@ -223,33 +172,14 @@ class ImageFolderDataset(Dataset):
     def __getstate__(self):
         return dict(super().__getstate__(), _zipfile=None)
 
-    def _load_raw_image(self, raw_idx):
+    def _load_raw_data(self, raw_idx):
         fname = self._image_fnames[raw_idx]
         with self._open_file(fname) as f:
-            if self._use_pyspng and pyspng is not None and self._file_ext(fname) == '.png':
-                image = pyspng.load(f.read())
-            elif self._file_ext(fname) == '.npy':
-                image = np.load(f)
-                image = image.astype(np.float64)
-            else:
-                image = np.array(PIL.Image.open(f))
-        if image.ndim == 2:
-            image = image[:, :, np.newaxis] # HW => HWC
-        image = image.transpose(2, 0, 1) # HWC => CHW
-        return image
-
-    def _load_raw_labels(self):
-        fname = 'dataset.json'
-        if fname not in self._all_fnames:
-            return None
-        with self._open_file(fname) as f:
-            labels = json.load(f)['labels']
-        if labels is None:
-            return None
-        labels = dict(labels)
-        labels = [labels[fname.replace('\\', '/')] for fname in self._image_fnames]
-        labels = np.array(labels)
-        labels = labels.astype({1: np.int64, 2: np.float32}[labels.ndim])
-        return labels
+            data = np.load(f)
+            data = data['arr_0'].astype(np.float64)
+        if data.ndim == 3:
+            data = data[:, :, :, np.newaxis] # DHW => DHWC
+        data = data.transpose(3, 0, 1, 2) # DHWC => CDHW
+        return data
 
 #----------------------------------------------------------------------------
