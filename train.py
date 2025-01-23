@@ -154,7 +154,7 @@ def main(**kwargs):
     if opts.seed is not None:
         c.seed = opts.seed
     else:
-        seed = torch.randint(1 << 31, size=[], device=torch.device('cpu'))
+        seed = torch.randint(1 << 31, size=[], device=torch.device('cuda'))
         torch.distributed.broadcast(seed, src=0)
         c.seed = int(seed)
 
