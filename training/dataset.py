@@ -10,6 +10,110 @@ import json
 import torch
 import dnnlib
 
+    
+class DatasetPointCloud(torch.utils.data.Dataset):
+    def __init__(self,
+        name,                   # Name of the dataset.
+        raw_shape                # Shape of the raw data, in the form of num_samples x channels x num_points
+    ):
+        self._name = name
+        self._raw_shape = list(raw_shape)
+
+    def close(self): # to be overridden by subclass
+        pass
+
+    def _load_raw_data(self, raw_idx): # to be overridden by subclass
+        raise NotImplementedError
+
+    def __getstate__(self):
+        return dict(self.__dict__, _raw_labels=None)
+
+    def __del__(self):
+        try:
+            self.close()
+        except:
+            pass
+
+    def __len__(self):
+        return self._num_points
+
+    def __getitem__(self, idx):
+        data = self._load_raw_data(idx)
+        assert isinstance(data, np.ndarray)
+        assert list(data.shape) == self.data_shape
+        assert data.dtype == np.float64
+        return data.copy()
+
+    @property
+    def name(self):
+        return self._name
+
+    @property
+    def data_shape(self):
+        return list(self._raw_shape[1:])
+
+    @property
+    def num_channels(self):
+        assert len(self.data_shape) == 2
+        return self.data_shape[0]
+
+    @property
+    def num_points(self):
+        assert len(self.data_shape) == 2
+        return self.data_shape[1]
+
+#----------------------------------------------------------------------------
+# Dataset subclass that loads the data recursively from the specified directory
+# or ZIP file.
+
+class FolderDatasetPointCloud(DatasetPointCloud):
+    def __init__(self,
+        path,                   # Path to directory or zip.
+        num_points      = None, 
+        **super_kwargs,         # Additional arguments for the Dataset base class.
+    ):
+        self._path = path
+
+        if os.path.isdir(self._path):
+            self._type = 'dir'
+            self._all_fnames = {os.path.relpath(os.path.join(root, fname), start=self._path) for root, _dirs, files in os.walk(self._path) for fname in files}
+        else:
+            raise IOError('Path must point to a directory')
+
+        self._image_fnames = sorted(fname for fname in self._all_fnames if self._file_ext(fname) == '.npz')
+        if len(self._image_fnames) == 0:
+            raise IOError('No data files found in the specified path')
+
+        name = os.path.splitext(os.path.basename(self._path))[0]
+        raw_shape = [len(self._image_fnames)] + list(self._load_raw_data(0).shape)
+        if num_points is not None and (raw_shape[0] != num_points):
+            raise IOError('Data files do not contain the specified number of points')
+        super().__init__(name=name, raw_shape=raw_shape, **super_kwargs)
+
+    @staticmethod
+    def _file_ext(fname):
+        return os.path.splitext(fname)[1].lower()
+
+    def _open_file(self, fname):
+        if self._type == 'dir':
+            return open(os.path.join(self._path, fname), 'rb')
+        return None
+
+    def __getstate__(self):
+        return dict(super().__getstate__(), _zipfile=None)
+
+    def _load_raw_data(self, raw_idx):
+        fname = self._image_fnames[raw_idx]
+        with self._open_file(fname) as f:
+            data = np.load(f)
+            if fname.endswith('.npz'):
+                data = data['arr_0'].astype(np.float64)
+            else:
+                data = data.astype(np.float64)
+        return data
+
+#----------------------------------------------------------------------------
+
 #----------------------------------------------------------------------------
 # Abstract base class for datasets.
 # don't need labels, as we are not using them -> Diffusion PDE paper does not use labels either
@@ -35,7 +139,14 @@ class Dataset3D(torch.utils.data.Dataset):
         self._label_shape = None
 
     def _get_raw_labels(self):
-        # return the zero labels
+        if self._raw_labels is None:
+            self._raw_labels = np.zeros([self._raw_shape[0], 0], dtype=np.float32)
+            assert isinstance(self._raw_labels, np.ndarray)
+            assert self._raw_labels.shape[0] == self._raw_shape[0]
+            assert self._raw_labels.dtype in [np.float32, np.int64]
+            if self._raw_labels.dtype == np.int64:
+                assert self._raw_labels.ndim == 1
+                assert np.all(self._raw_labels >= 0)
         return self._raw_labels
 
     def close(self): # to be overridden by subclass
@@ -135,7 +246,7 @@ class FolderDataset3D(Dataset3D):
         else:
             raise IOError('Path must point to a directory or zip')
 
-        self._image_fnames = sorted(fname for fname in self._all_fnames if self._file_ext(fname) == '.npz')
+        self._image_fnames = sorted(fname for fname in self._all_fnames if self._file_ext(fname) == '.npz' or self._file_ext(fname) == '.npy')
         if len(self._image_fnames) == 0:
             raise IOError('No data files found in the specified path')
 
@@ -176,10 +287,14 @@ class FolderDataset3D(Dataset3D):
         fname = self._image_fnames[raw_idx]
         with self._open_file(fname) as f:
             data = np.load(f)
-            data = data['arr_0'].astype(np.float64)
+            if fname.endswith('.npz'):
+                data = data['arr_0'].astype(np.float64)
+            else:
+                data = data.astype(np.float64)
+
         if data.ndim == 3:
-            data = data[:, :, :, np.newaxis] # DHW => DHWC
-        data = data.transpose(3, 0, 1, 2) # DHWC => CDHW
+            data = data[:, :, :, np.newaxis]  # DHW => DHWC
+        data = data.transpose(3, 0, 1, 2)  # DHWC => CDHW
         return data
 
 #----------------------------------------------------------------------------

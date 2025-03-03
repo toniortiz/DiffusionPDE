@@ -17,12 +17,87 @@
 import numpy as np
 import torch
 from torch.nn.functional import silu
+import torch.nn as nn
+import torch.nn.functional as F
 
 from torch_utils import persistence
 
+# TODO: Add embedding for the noise, like in SongUNet
+
+class PointNetEncoder(torch.nn.Module):
+    def __init__(self, channel=3):
+        super().__init__()
+        self.conv1 = torch.nn.Conv1d(channel, 64, 1)
+        self.conv2 = torch.nn.Conv1d(64, 128, 1)
+        self.conv3 = torch.nn.Conv1d(128, 1024, 1)
+
+        self.bn1 = nn.BatchNorm1d(64)
+        self.bn2 = nn.BatchNorm1d(128)
+        self.bn3 = nn.BatchNorm1d(1024)
+
+    def forward(self, x):
+        x = x.permute(0, 2, 1)
+        B, D, N = x.size()
+        pointfeat = x
+        x = F.relu(self.bn1(self.conv1(x)))
+        x = F.relu(self.bn2(self.conv2(x)))
+        x = self.bn3(self.conv3(x))
+        x = torch.max(x, 2, keepdim=True)[0]
+        x = x.view(-1, 1024)
+        x = x.view(-1, 1024, 1).repeat(1, 1, N)
+        return torch.cat([x, pointfeat], 1)
+
+class PointNet(torch.nn.Module):
+    def __init__(self, 
+                 num_channels,
+                 num_points=500, 
+                 embedding_type='positional', 
+                 channel_mult_noise=1,
+                 dropout=0.1):
+        super().__init__()
+
+        # Create the timestep embedding for the noise
+        noise_channels = num_points * channel_mult_noise
+        self.map_noise = (
+            PositionalEmbedding(num_channels=noise_channels, endpoint=True)
+            if embedding_type == "positional"
+            else FourierEmbedding(num_channels=noise_channels)
+        )
+
+        # One additional channel for the timestep embedding
+        self.feat = PointNetEncoder(num_channels + 1)
+        self.lin1 = nn.Linear(1028,512)
+        self.lin2 = nn.Linear(512, 256)
+        self.lin3 = nn.Linear(256, num_channels)
+        self.dropout = nn.Dropout(p=dropout)
+        self.bn1 = nn.BatchNorm1d(512)
+        self.bn2 = nn.BatchNorm1d(256)
+        self.relu = nn.ReLU()
+    
+    def forward(self, x, noise_labels):
+        # Calculate the timestep embedding
+        emb = self.map_noise(noise_labels)
+        emb = emb.reshape(emb.shape[0], 2, -1).flip(1).reshape(*emb.shape)  # swap sin/cos
+
+        # Concatenate along feature dimension
+        x = torch.cat([x, emb], 1)
+        x = self.feat(x)
+        x = x.permute(0, 2, 1)
+        x = self.lin1(x)
+        x = x.permute(0, 2, 1)
+        x = self.bn1(x)
+        x = F.relu(x)
+        x = x.permute(0, 2, 1)
+        x = self.dropout(self.lin2(x))
+        x = x.permute(0, 2, 1)
+        x = F.relu(self.bn2(x))
+        x = x.permute(0, 2, 1)
+        x = self.lin3(x)
+        x = F.log_softmax(x, dim=1)
+        return x
+
 # ----------------------------------------------------------------------------
 # Unified routine for initializing weights and biases.
-
 
 def weight_init(shape, mode, fan_in, fan_out):
     if mode == "xavier_uniform":

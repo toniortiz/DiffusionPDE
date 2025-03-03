@@ -19,6 +19,7 @@ import dnnlib
 from torch_utils import distributed as dist
 from torch_utils import training_stats
 from torch_utils import misc
+import torch.nn.functional as F
 
 #----------------------------------------------------------------------------
 
@@ -127,6 +128,10 @@ def training_loop(
             with misc.ddp_sync(ddp, (round_idx == num_accumulation_rounds - 1)):
                 data, labels = next(dataset_iterator)
                 data = data.to(device).to(torch.float32) # normalize to -1..+1
+                #TODO: remove this line
+                # bs, ch, z,y,x
+                data = F.interpolate(data, size=(net.data_resolution//2, net.data_resolution//2, net.data_resolution//2), mode='nearest', align_corners=False)
+                print(data.shape)
                 labels = labels.to(device)
                 loss = loss_fn(net=ddp, data=data, labels=labels, augment_pipe=augment_pipe)
                 training_stats.report('Loss/loss', loss)
