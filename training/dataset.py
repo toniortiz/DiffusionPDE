@@ -18,6 +18,7 @@ class DatasetPointCloud(torch.utils.data.Dataset):
     ):
         self._name = name
         self._raw_shape = list(raw_shape)
+        self._num_points = self._raw_shape[2];    
 
     def close(self): # to be overridden by subclass
         pass
@@ -69,7 +70,6 @@ class DatasetPointCloud(torch.utils.data.Dataset):
 class FolderDatasetPointCloud(DatasetPointCloud):
     def __init__(self,
         path,                   # Path to directory or zip.
-        num_points      = None, 
         **super_kwargs,         # Additional arguments for the Dataset base class.
     ):
         self._path = path
@@ -86,8 +86,6 @@ class FolderDatasetPointCloud(DatasetPointCloud):
 
         name = os.path.splitext(os.path.basename(self._path))[0]
         raw_shape = [len(self._image_fnames)] + list(self._load_raw_data(0).shape)
-        if num_points is not None and (raw_shape[0] != num_points):
-            raise IOError('Data files do not contain the specified number of points')
         super().__init__(name=name, raw_shape=raw_shape, **super_kwargs)
 
     @staticmethod

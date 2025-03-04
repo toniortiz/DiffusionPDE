@@ -72,7 +72,7 @@ def training_loop(
 
     # Construct network.
     dist.print0('Constructing network...')
-    interface_kwargs = dict(data_resolution=dataset_obj.resolution, img_channels=dataset_obj.num_channels, label_dim=dataset_obj.label_dim)
+    interface_kwargs = dict(num_points=dataset_obj.num_points, num_channels=dataset_obj.num_channels)
     net = dnnlib.util.construct_class_by_name(**network_kwargs, **interface_kwargs) # subclass of torch.nn.Module
     net.train().requires_grad_(True).to(device)
     if dist.get_rank() == 0:
@@ -130,8 +130,6 @@ def training_loop(
                 data = data.to(device).to(torch.float32) # normalize to -1..+1
                 #TODO: remove this line
                 # bs, ch, z,y,x
-                data = F.interpolate(data, size=(net.data_resolution//2, net.data_resolution//2, net.data_resolution//2), mode='nearest', align_corners=False)
-                print(data.shape)
                 labels = labels.to(device)
                 loss = loss_fn(net=ddp, data=data, labels=labels, augment_pipe=augment_pipe)
                 training_stats.report('Loss/loss', loss)

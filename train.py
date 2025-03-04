@@ -104,7 +104,6 @@ def main(**kwargs):
     try:
         dataset_obj = dnnlib.util.construct_class_by_name(**c.dataset_kwargs)
         dataset_name = dataset_obj.name
-        c.dataset_kwargs.max_size = len(dataset_obj) # be explicit about dataset size
         if opts.cond and not dataset_obj.has_labels:
             raise click.ClickException('--cond=True requires labels specified in dataset.json')
         del dataset_obj # conserve memory

@@ -22,7 +22,29 @@ import torch.nn.functional as F
 
 from torch_utils import persistence
 
-# TODO: Add embedding for the noise, like in SongUNet
+class MLP(torch.nn.Module):
+    def __init__(self, in_channels, out_channels, dropout = False, p = 0.0, training = True):
+        super().__init__()
+        self.training = training
+        self.bn0 = nn.BatchNorm1d(in_channels)
+        self.lin = nn.Linear(in_channels, out_channels)
+        self.dropout = nn.Dropout(p=p)
+        self.bn = nn.BatchNorm1d(out_channels)
+        self.relu = nn.ReLU()
+        self.p = p
+    
+    def forward(self, x, emb):
+        params = self.affine(emb).unsqueeze(2).unsqueeze(3).unsqueeze(4).to(x.dtype)
+        x = silu(self.bn0(x.add_(params)))
+
+        x = x.permute(0, 2, 1)
+        x = self.lin(x)
+        if self.dropout and self.training:
+            x = self.dropout(x)
+        x = x.permute(0, 2, 1)
+        x = self.bn(x)
+        x = self.relu(x)
+        return x
 
 class PointNetEncoder(torch.nn.Module):
     def __init__(self, channel=3):
@@ -31,11 +53,15 @@ class PointNetEncoder(torch.nn.Module):
         self.conv2 = torch.nn.Conv1d(64, 128, 1)
         self.conv3 = torch.nn.Conv1d(128, 1024, 1)
 
+        self.bn0 = nn.BatchNorm1d(channel)
         self.bn1 = nn.BatchNorm1d(64)
         self.bn2 = nn.BatchNorm1d(128)
         self.bn3 = nn.BatchNorm1d(1024)
 
-    def forward(self, x):
+    def forward(self, x, emb):
+        params = self.affine(emb).unsqueeze(2).unsqueeze(3).unsqueeze(4).to(x.dtype)
+        x = silu(self.bn0(x.add_(params)))
+
         x = x.permute(0, 2, 1)
         B, D, N = x.size()
         pointfeat = x
@@ -53,47 +79,47 @@ class PointNet(torch.nn.Module):
                  num_points=500, 
                  embedding_type='positional', 
                  channel_mult_noise=1,
-                 dropout=0.1):
+                 channel_mult_emb=1,
+                 dropout=0.1,
+                 training=True):
         super().__init__()
 
         # Create the timestep embedding for the noise
         noise_channels = num_points * channel_mult_noise
+        emb_channels = num_points * channel_mult_emb
         self.map_noise = (
             PositionalEmbedding(num_channels=noise_channels, endpoint=True)
             if embedding_type == "positional"
             else FourierEmbedding(num_channels=noise_channels)
         )
 
+        self.training = training
+
+        self.map_layer0 = nn.Linear(noise_channels,emb_channels)
+        self.map_layer1 = nn.Linear(emb_channels,emb_channels)
+
         # One additional channel for the timestep embedding
-        self.feat = PointNetEncoder(num_channels + 1)
-        self.lin1 = nn.Linear(1028,512)
-        self.lin2 = nn.Linear(512, 256)
-        self.lin3 = nn.Linear(256, num_channels)
-        self.dropout = nn.Dropout(p=dropout)
-        self.bn1 = nn.BatchNorm1d(512)
-        self.bn2 = nn.BatchNorm1d(256)
-        self.relu = nn.ReLU()
+        self.feat = PointNetEncoder(num_channels)
+        self.mlp1 = MLP(1028, 512, dropout=False)
+        self.mlp2 = MLP(512, 256, dropout=True, p=dropout, training = self.training)
+        self.mlp3 = MLP(256, 128, dropout=False)
+        self.mlp4 = MLP(128, num_channels, dropout=False)
+
     
-    def forward(self, x, noise_labels):
+    def forward(self, x,noise_labels):
         # Calculate the timestep embedding
         emb = self.map_noise(noise_labels)
         emb = emb.reshape(emb.shape[0], 2, -1).flip(1).reshape(*emb.shape)  # swap sin/cos
 
-        # Concatenate along feature dimension
-        x = torch.cat([x, emb], 1)
-        x = self.feat(x)
-        x = x.permute(0, 2, 1)
-        x = self.lin1(x)
-        x = x.permute(0, 2, 1)
-        x = self.bn1(x)
-        x = F.relu(x)
-        x = x.permute(0, 2, 1)
-        x = self.dropout(self.lin2(x))
-        x = x.permute(0, 2, 1)
-        x = F.relu(self.bn2(x))
-        x = x.permute(0, 2, 1)
-        x = self.lin3(x)
-        x = F.log_softmax(x, dim=1)
+        emb = silu(self.map_layer0(emb))
+        emb = silu(self.map_layer1(emb))
+
+        x = self.feat(x, emb)
+        x = self.mlp1(x, emb)
+        x = self.mlp2(x, emb)
+        x = self.mlp3(x, emb)
+        x = self.mlp4(x, emb)
+        #x = F.log_softmax(x, dim=1)
         return x
 
 # ----------------------------------------------------------------------------
@@ -326,8 +352,6 @@ class UNetBlock(torch.nn.Module):
 # ----------------------------------------------------------------------------
 # Timestep embedding used in the DDPM++ and ADM architectures.
 
-
-@persistence.persistent_class
 class PositionalEmbedding(torch.nn.Module):
     def __init__(self, num_channels, max_positions=10000, endpoint=False):
         super().__init__()
@@ -347,8 +371,6 @@ class PositionalEmbedding(torch.nn.Module):
 # ----------------------------------------------------------------------------
 # Timestep embedding used in the NCSN++ architecture.
 
-
-@persistence.persistent_class
 class FourierEmbedding(torch.nn.Module):
     def __init__(self, num_channels, scale=16):
         super().__init__()
