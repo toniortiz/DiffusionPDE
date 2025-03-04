@@ -72,8 +72,7 @@ def training_loop(
 
     # Construct network.
     dist.print0('Constructing network...')
-    interface_kwargs = dict(num_points=dataset_obj.num_points, num_channels=dataset_obj.num_channels)
-    net = dnnlib.util.construct_class_by_name(**network_kwargs, **interface_kwargs) # subclass of torch.nn.Module
+    net = dnnlib.util.construct_class_by_name(**network_kwargs) # subclass of torch.nn.Module
     net.train().requires_grad_(True).to(device)
     if dist.get_rank() == 0:
         with torch.no_grad():

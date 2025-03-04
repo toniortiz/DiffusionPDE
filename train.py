@@ -112,18 +112,11 @@ def main(**kwargs):
 
     # Network architecture.
     if opts.arch == 'ddpmpp':
-        c.network_kwargs.update(model_type='PointNet', embedding_type='positional', encoder_type='standard', decoder_type='standard')
+        c.network_kwargs.update(model_type='PointNet', embedding_type='positional')
         c.network_kwargs.update(channel_mult_noise=1,num_channels=5,num_points=493)
     # Preconditioning & loss function.
-    if opts.precond == 'vp':
-        c.network_kwargs.class_name = 'training.networks.VPPrecond'
-        c.loss_kwargs.class_name = 'training.loss.VPLoss'
-    elif opts.precond == 've':
-        c.network_kwargs.class_name = 'training.networks.VEPrecond'
-        c.loss_kwargs.class_name = 'training.loss.VELoss'
-    else:
-        assert opts.precond == 'edm'
-        c.network_kwargs.class_name = 'training.networks.EDMPrecond'
+    if opts.precond == 'edm':
+        c.network_kwargs.class_name = 'training.networks.EDMPrecondPointCloud'
         c.loss_kwargs.class_name = 'training.loss.EDMLoss'
 
     # Network options.
