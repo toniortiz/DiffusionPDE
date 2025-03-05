@@ -76,10 +76,12 @@ def training_loop(
     net.train().requires_grad_(True).to(device)
     if dist.get_rank() == 0:
         with torch.no_grad():
-            data = torch.zeros([batch_gpu, net.img_channels, net.data_resolution, net.data_resolution, net.data_resolution], device=device)
+            data = torch.zeros([batch_gpu, net.num_channels, net.num_points], device=device)
             sigma = torch.ones([batch_gpu], device=device)
-            labels = torch.zeros([batch_gpu, net.label_dim], device=device)
-            misc.print_module_summary(net, [data, sigma, labels], max_nesting=2)
+            print("Before")
+            out = net(data, sigma)
+            print("After")
+            misc.print_module_summary(net, [data, sigma], max_nesting=2)
 
     # Setup optimizer.
     dist.print0('Setting up optimizer...')

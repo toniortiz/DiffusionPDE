@@ -87,6 +87,8 @@ class PointNet(torch.nn.Module):
         # Create the timestep embedding for the noise
         noise_channels = num_points * channel_mult_noise
         emb_channels = num_points * channel_mult_emb
+        print("NOISE CHANNELS: ", noise_channels)
+        print("EMB CHANNELS: ", emb_channels)
         self.map_noise = (
             PositionalEmbedding(num_channels=noise_channels, endpoint=True)
             if embedding_type == "positional"
@@ -106,10 +108,13 @@ class PointNet(torch.nn.Module):
         self.mlp4 = MLP(128, num_channels, dropout=False)
 
     
-    def forward(self, x,noise_labels):
+    def forward(self, x, noise_labels):
+
         # Calculate the timestep embedding
         emb = self.map_noise(noise_labels)
         emb = emb.reshape(emb.shape[0], 2, -1).flip(1).reshape(*emb.shape)  # swap sin/cos
+        
+        print("EMB shape: ", emb.shape)
 
         emb = silu(self.map_layer0(emb))
         emb = silu(self.map_layer1(emb))
@@ -627,6 +632,8 @@ class EDMPrecondPointCloud(torch.nn.Module):
         c_in = 1 / (self.sigma_data**2 + sigma**2).sqrt()
         c_noise = sigma.log() / 4
 
+        print("C_IN*X has shape: ", (c_in * x).shape)
+        print("C_NOISE has shape: ", c_noise.flatten().shape)
         F_x = self.model((c_in * x).to(dtype), c_noise.flatten(), **model_kwargs)
         assert F_x.dtype == dtype
         D_x = c_skip * x + c_out * F_x.to(torch.float32)
